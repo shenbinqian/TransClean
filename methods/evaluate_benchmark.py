@@ -4,20 +4,22 @@ evaluate_benchmark.py
 =====================
 Evaluation harness for clean translation detection methods.
 
+Label convention: 0 = clean, 1 = noisy (positive class for detection = noisy).
+
 Computes two separate metrics:
   1. Detection accuracy: did the method detect whether translation is noisy?
      (extracted == original LLM output → predicts clean, else predicts noisy)
   2. Extraction accuracy: did the method correctly extract the clean translation?
-     (exact match with reference for synthetic, silver_reference for curated)
+     (exact match with gold_clean for synthetic, silver_reference for curated)
 
 Reads saved results from individual method runs. Does NOT run any methods
 directly (each method has its own script due to environment conflicts).
 
 Usage:
     python methods/evaluate_benchmark.py \
-        --benchmark data/synthetic.jsonl \
-        --results results/llm_extractor/aya/synthetic_results.jsonl \
-                  results/qe_span/synthetic_results.jsonl \
+        --benchmark data/val.jsonl \
+        --results results/llm_extractor/aya/val_results.jsonl \
+                  results/qe_span/val_results.jsonl \
         --eval-mode synthetic
 
     python methods/evaluate_benchmark.py \
@@ -58,7 +60,7 @@ def load_jsonl(path: str) -> List[Dict]:
 def infer_method_name(results_path: str) -> str:
     """Infer method name from results file path.
 
-    e.g. 'results/llm_extractor/qwen3.5_0.8/synthetic_results.jsonl' -> 'llm_extractor/qwen3.5_0.8'
+    e.g. 'results/llm_extractor/qwen3.5_0.8/val_results.jsonl' -> 'llm_extractor/qwen3.5_0.8'
     """
     parts = Path(results_path).parts
     # Find 'results' in path and take everything after it except the filename
@@ -172,7 +174,11 @@ def get_extracted_text(result: Dict) -> Optional[str]:
 
 
 def compute_metrics(gold: List[int], pred: List[int]) -> Dict[str, float]:
-    """Compute precision, recall, F1 for the positive class (label=1 = clean)."""
+    """Compute precision, recall, F1 for the positive class (label=1 = noisy).
+
+    Label convention: 0 = clean, 1 = noisy. Accuracy is symmetric under label
+    swap; precision/recall/F1 describe the noisy class.
+    """
     tp = fp = fn = tn = 0
     for g, p in zip(gold, pred):
         if p == 1 and g == 1:
@@ -246,25 +252,28 @@ def evaluate_detection(
     """
     Detection: did the method detect whether translation is noisy?
 
-    If extracted == original LLM output (translation field), the method predicts
-    clean (label=1). Otherwise it predicts noisy (label=0).
+    Label convention: 0 = clean, 1 = noisy. If extracted == original LLM output
+    (translation field), the method predicts clean (label=0). Otherwise it
+    predicts noisy (label=1).
 
     Returns:
         (pred_labels, metrics_dict)
     """
-    gold_labels = [item.get("label", 0) for item in benchmark]
+    # Missing label → assume noisy (curated set carries no label field).
+    gold_labels = [item.get("label", 1) for item in benchmark]
     pred_labels = []
 
     for bench_item, res_item in zip(benchmark, results):
         extracted = get_extracted_text(res_item)
         if extracted is None or extracted.strip() == "":
             # No extraction or empty → method found no clean translation → predicts noisy
-            pred_labels.append(0)
+            pred_labels.append(1)
             continue
 
         original = bench_item.get("translation", "")
-        label = assign_detection_label(extracted, original)
-        pred_labels.append(label)
+        # assign_detection_label uses 1=clean/0=noisy; invert to this harness's
+        # 0=clean/1=noisy convention.
+        pred_labels.append(1 - assign_detection_label(extracted, original))
 
     metrics = compute_metrics(gold_labels, pred_labels)
     return pred_labels, metrics
@@ -325,14 +334,16 @@ def evaluate_extraction(
     """
     Extraction accuracy: does the extracted text match the ground truth?
 
-    For synthetic: ground truth = reference field.
+    For synthetic: ground truth = gold_clean field (empty string for off_topic /
+    wrong_language rows, where no clean translation should be extracted). Falls
+    back to the reference field for older benchmark files without gold_clean.
     For curated: ground truth = silver_reference field (from silver label aggregation).
 
     Returns metrics dict or None if ground truth is unavailable.
     """
     # Determine ground truth field
     if eval_mode == "synthetic":
-        gt_field = "reference"
+        gt_field = "gold_clean" if any("gold_clean" in item for item in benchmark) else "reference"
     else:
         gt_field = "silver_reference"
         # Check if silver labels are available
@@ -417,7 +428,7 @@ def evaluate_noise_prediction(
     if not has_gold_pattern and not has_gold_category:
         return None
 
-    # Only evaluate on noisy instances (label=0)
+    # Only evaluate on noisy instances (label=1; missing label → assume noisy)
     pattern_correct = 0
     category_correct = 0
     total_noisy = 0
@@ -426,7 +437,7 @@ def evaluate_noise_prediction(
     category_confusion = defaultdict(lambda: defaultdict(int))
 
     for bench_item, res_item in zip(benchmark, results):
-        if bench_item.get("label", 0) != 0:
+        if bench_item.get("label", 1) != 1:
             continue
 
         total_noisy += 1
@@ -485,7 +496,7 @@ def print_results(
     # ── Detection Accuracy ──
     print(f"\n{'=' * 80}")
     print(f"Detection Accuracy (extracted != original → noisy)")
-    print(f"Eval mode: {eval_mode}")
+    print(f"Eval mode: {eval_mode}  [positive class = noisy, label=1]")
     print(f"{'=' * 80}\n")
 
     header = (
@@ -519,7 +530,7 @@ def print_results(
     if has_extraction:
         print(f"\n{'=' * 80}")
         print(f"Extraction Accuracy (extracted == ground truth)")
-        gt_desc = "reference" if eval_mode == "synthetic" else "silver_reference"
+        gt_desc = "gold_clean" if eval_mode == "synthetic" else "silver_reference"
         print(f"Ground truth: {gt_desc}")
         print(f"{'=' * 80}\n")
 
@@ -629,9 +640,11 @@ def main():
         sys.exit(1)
 
     benchmark = load_jsonl(args.benchmark)
-    gold_labels = [item.get("label", 0) for item in benchmark]
+    # Label convention: 0 = clean, 1 = noisy. Missing label → assume noisy.
+    gold_labels = [item.get("label", 1) for item in benchmark]
+    n_noisy = sum(gold_labels)
     print(f"Loaded benchmark: {len(benchmark)} instances "
-          f"({sum(gold_labels)} clean, {len(gold_labels) - sum(gold_labels)} noisy)")
+          f"({len(gold_labels) - n_noisy} clean, {n_noisy} noisy)")
 
     # Determine eval mode
     if args.eval_mode == "auto":
