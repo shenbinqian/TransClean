@@ -1,6 +1,6 @@
 # TransClean: A Benchmark for Detecting and Extracting Clean Translations from Large Language Model Outputs
 
-This repository contains the code and data of our paper [TransClean: A Benchmark for Detecting and Extracting Clean Translations from Large Language Model Outputs]() presented at WMT26. The code and data are released for reproducibility purposes. Please visit our [Hugging Face repo](https://huggingface.co/datasets/shenbinqian/TransClean), if you want to use our data to detect and extract clean translations from LLM outputs. More details will be released soon.
+This repository contains the code and data of our paper [TransClean: A Benchmark for Detecting and Extracting Clean Translations from Large Language Model Outputs](https://arxiv.org/abs/2609.11399) presented at WMT26. The code and data are released for reproducibility purposes. Please visit our [Hugging Face repo](https://huggingface.co/datasets/shenbinqian/TransClean), if you want to use our data to detect and extract clean translations from LLM outputs. 
 
 ## Environment and Reproducibility
 
